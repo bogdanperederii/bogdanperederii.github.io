@@ -4,13 +4,34 @@ import mdx from '@astrojs/mdx';
 import fs from 'node:fs';
 import path from 'node:path';
 
-// Pomocná funkcia na vyčistenie URL z vložených HTML tagov
+// Jediná, univerzálna funkcia na vyčistenie URL a Windows ciest
 function cleanUrl(input) {
   if (!input) return "";
-  const match = input.match(/src=["']([^"']+)["']/);
-  if (match) return match[1].trim();
-  const urlMatch = input.match(/https?:\/\/[^\s"'>]+/);
-  return urlMatch ? urlMatch[0].trim() : input.trim();
+  let val = input.trim();
+
+  // 1. Ak je to celý HTML tag <img src="...">
+  const imgMatch = val.match(/src=["']([^"']+)["']/);
+  if (imgMatch) val = imgMatch[1].trim();
+
+  // 2. Ak je to webový http/https link
+  if (/^https?:\/\//i.test(val)) {
+    const urlMatch = val.match(/https?:\/\/[^\s"'>]+/);
+    return urlMatch ? urlMatch[0].trim() : val;
+  }
+
+  // 3. Ak je to lokálna cesta z Windowsu: zmeň spätné lomky \ na dopredné /
+  val = val.replace(/\\/g, '/');
+
+  // 4. Odstráň slovo 'public/' alebo './public/' zo začiatku cesty
+  val = val.replace(/^(\.\/)?public\//i, '/');
+
+  // 5. Cesta musí začínať jednou lomkou '/'
+  if (!val.startsWith('/')) {
+    val = '/' + val;
+  }
+
+  // Odstránenie prípadných zdvojených lomiek
+  return val.replace(/\/+/g, '/');
 }
 
 // Lokálny CMS plugin, ktorý beží IBA na tvojom laptope pri 'npm run dev'
@@ -35,8 +56,10 @@ function localCmsPlugin() {
               const awardsArray = Array.isArray(data.awards) ? data.awards.filter(a => a.festival && (a.award_en || a.award_sk)) : [];
               const btsArray = data.btsText ? data.btsText.split('\n').map(line => {
                 const parts = line.split('|').map(p => p.trim());
-                if (parts.length >= 3) {
-                  return { media: cleanUrl(parts[0]), note_en: parts[1], note_sk: parts[2], gear: parts[3] || undefined };
+                if (parts.length >= 2) {
+                  return { media: cleanUrl(parts[0]), note_en: parts[1], note_sk: parts[2] || parts[1], gear: parts[3] || undefined };
+                } else if (parts[0] && cleanUrl(parts[0])) {
+                  return { media: cleanUrl(parts[0]), note_en: '', note_sk: '', gear: undefined };
                 }
                 return null;
               }).filter(Boolean) : [];
@@ -83,6 +106,12 @@ bts: ${btsArray.length > 0 ? '\n' + btsArray.map(b => `  - media: "${b.media}"\n
 ---
 `;
 
+              // AUTOMATICKÉ VYTVORENIE PRIEČINKA PRE FOTKY PROJEKTU
+              const projectImgDir = path.join(process.cwd(), 'public', 'images', 'projects', slug);
+              if (!fs.existsSync(projectImgDir)) {
+                fs.mkdirSync(projectImgDir, { recursive: true });
+              }
+
               fs.writeFileSync(filePath, mdxContent, 'utf-8');
               res.setHeader('Content-Type', 'application/json');
               res.end(JSON.stringify({ success: true, slug }));
@@ -100,11 +129,9 @@ bts: ${btsArray.length > 0 ? '\n' + btsArray.map(b => `  - media: "${b.media}"\n
   };
 }
 
-const isProd = process.env.NODE_ENV === 'production';
-
 export default defineConfig({
   site: 'https://bogdanperederii.github.io',
-  base: '/',  // <-- ZMEŇ z '/portfolio' na '/'
+  base: '/',
   build: {
     assets: 'assets'
   },
